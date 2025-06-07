@@ -11,7 +11,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	lipgloss "github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
+
 	"ntduncan.com/typer/styles"
+	"ntduncan.com/typer/system"
 	typetest "ntduncan.com/typer/type-test"
 	"ntduncan.com/typer/utils"
 )
@@ -23,6 +25,7 @@ type Model struct {
 }
 
 var BestWPM string = ""
+var isConfirmQuit bool = false
 
 func InitModel(width int, height int, size int, mode utils.TestMode) Model {
 	tt := typetest.New(size, mode)
@@ -47,7 +50,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc", "ctrl+c":
-			return m, tea.Quit
+			if isConfirmQuit {
+
+				config := system.Config{
+					Size:     m.test.Size,
+					Mode:     m.test.Mode,
+					TopScore: BestWPM,
+				}
+				if err := system.SaveConfig(config); err != nil {
+					panic(fmt.Sprintf("There was an error saving your configuration: %s", err))
+				}
+
+				return m, tea.Quit
+			}
+			isConfirmQuit = true
+
 		case "tab":
 			//restart
 			m = InitModel(m.viewport.Width, m.viewport.Height, m.test.Size, m.test.Mode)
@@ -90,6 +107,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		default:
+
+			if isConfirmQuit {
+				if msg.String() == "y" || msg.String() == "Y" || msg.String() == "enter" {
+
+					config := system.Config{
+						Size:     m.test.Size,
+						Mode:     m.test.Mode,
+						TopScore: BestWPM,
+					}
+					if err := system.SaveConfig(config); err != nil {
+						panic(fmt.Sprintf("There was an error saving your configuration: %s", err))
+					}
+
+					return m, tea.Quit
+				}
+
+				if msg.String() == "n" || msg.String() == "N" {
+					isConfirmQuit = false
+				}
+			}
+
 			if m.test.Mode == utils.TimeTest && m.test.StartTime.IsZero() {
 				cmd = m.test.TestTimer.Start()
 			}
@@ -138,7 +176,7 @@ func (m Model) View() string {
 		Padding(0, 1, 0, 0).
 		Render("WPM: " + wpm)
 
-	if wpm > BestWPM {
+	if wpm > BestWPM || BestWPM == "0.00" {
 		BestWPM = wpm
 	}
 
@@ -191,29 +229,33 @@ func (m Model) View() string {
 
 	body := ""
 
-	correct := lipgloss.NewStyle().Foreground(lipgloss.Color("#85DEAD"))
-	incorrect := lipgloss.NewStyle().Foreground(colors.White).Background(lipgloss.Color(colors.Red))
-	blockCursor := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFF")).Background(colors.Black)
-	lineCursor := lipgloss.NewStyle().Underline(true)
-	blank := lipgloss.NewStyle()
+	if isConfirmQuit {
+		body = "Confirm Quit? [Y]es [N]o"
+	} else {
+		correct := lipgloss.NewStyle().Foreground(lipgloss.Color("#85DEAD"))
+		incorrect := lipgloss.NewStyle().Foreground(colors.White).Background(lipgloss.Color(colors.Red))
+		blockCursor := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFF")).Background(colors.Black)
+		lineCursor := lipgloss.NewStyle().Underline(true)
+		blank := lipgloss.NewStyle()
 
-	for i, p := range m.test.Params {
-		if i == m.cursor {
-			if (m.test.EndTime != time.Time{}) {
-				body += blockCursor.Render(p.Char)
+		for i, p := range m.test.Params {
+			if i == m.cursor {
+				if (m.test.EndTime != time.Time{}) {
+					body += blockCursor.Render(p.Char)
+				} else {
+					body += lineCursor.Render(p.Char)
+				}
+				continue
+			} else if p.IsValid {
+				body += correct.Render(p.Char)
+				continue
+			} else if !p.IsValid && p.Input != "" {
+				body += incorrect.Render(p.Char)
+				continue
 			} else {
-				body += lineCursor.Render(p.Char)
+				body += blank.Render(p.Char)
+				continue
 			}
-			continue
-		} else if p.IsValid {
-			body += correct.Render(p.Char)
-			continue
-		} else if !p.IsValid && p.Input != "" {
-			body += incorrect.Render(p.Char)
-			continue
-		} else {
-			body += blank.Render(p.Char)
-			continue
 		}
 	}
 
@@ -247,7 +289,14 @@ func (m Model) footer() string {
 }
 
 func main() {
-	p := tea.NewProgram(InitModel(10, 10, 10, utils.WordsTest), tea.WithAltScreen())
+	config, configErr := system.LoadConfig()
+	if configErr != nil {
+		panic(configErr)
+	}
+
+	BestWPM = config.TopScore
+
+	p := tea.NewProgram(InitModel(10, 10, config.Size, config.Mode), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Exited with error: %s", err)
 		os.Exit(1)
